@@ -619,7 +619,7 @@ const Index = () => {
             )}
           </AnimatePresence>
         </motion.div>
-        <div className="space-y-4">
+        <div className="mt-8">
           <motion.button
             onClick={playGame}
             className="w-full bg-gradient-to-r from-foreground to-foreground/90 text-primary rounded-xl py-4 px-8 font-semibold text-lg shadow-lg hover:shadow-xl transition-all duration-300 hover:opacity-90 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -639,7 +639,7 @@ const Index = () => {
             ) : result ? "Играть снова" : "Случайный выбор"}
           </motion.button>
 
-          <div className="w-full grid grid-cols-2 gap-4">
+          <div className="w-full grid grid-cols-2 gap-4 mt-4">
             <motion.button
               onClick={() => selectManually("ПРАВДА")}
               className="bg-foreground/80 text-primary rounded-xl py-4 px-8 font-semibold text-lg shadow-lg hover:shadow-xl transition-all duration-300 hover:opacity-90 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -704,7 +704,7 @@ const Index = () => {
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-card/90 backdrop-blur-lg rounded-xl p-4 mb-4 flex justify-between items-center"
+          className="bg-card/90 backdrop-blur-lg rounded-xl p-4 mt-6 mb-12 flex justify-between items-center"
         >
           <div className="flex items-center gap-2">
             <Star className="w-5 h-5" />
