@@ -1,23 +1,4 @@
-export type Difficulty = 'easy' | 'medium' | 'hard';
-
-export interface GameTask {
-  text: string;
-  difficulty: Difficulty;
-  points: number;
-  timeLimit?: number; 
-  followUpId?: string;
-}
-
-export interface Achievement {
-  id: string;
-  title: string;
-  description: string;
-  icon: string;
-  condition: {
-    type: 'tasksCompleted' | 'pointsEarned' | 'streakReached' | 'truthsAnswered' | 'daresCompleted';
-    value: number;
-  };
-}
+export type Difficulty = "easy" | "medium" | "hard";
 
 export interface PlayerStats {
   points: number;
@@ -27,10 +8,27 @@ export interface PlayerStats {
   achievements: string[];
   currentStreak: number;
   maxStreak: number;
+  level: number;
+  xp: number;
+  skipTokens?: number;
+  xpBoostEndTime?: number;
 }
 
 export interface GameState {
   difficulty: Difficulty;
   playerStats: PlayerStats;
   lastTaskTimestamp: number | null;
+  selectedCategory: string;
+  activeChallenge: Challenge | null;
+  surpriseMessage?: string;
+}
+
+export interface Challenge {
+  id: string;
+  fromPlayer: string;
+  toPlayer: string;
+  task: string;
+  type: "TRUTH" | "DARE";
+  status: "PENDING" | "ACCEPTED" | "COMPLETED" | "FAILED";
+  expiresAt: number;
 } 

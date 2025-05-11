@@ -2,10 +2,24 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import { gameData } from "@/data/game-data";
-import { achievements } from "@/data/achievements";
 import confetti from 'canvas-confetti';
-import { Share, Settings, ArrowRight, Send, Trophy, Timer, Star, Flame } from "lucide-react";
+import { Share, Settings, ArrowRight, Send, Trophy, Timer, Star, Flame, Plus, X, Gift } from "lucide-react";
 import { Difficulty, PlayerStats, GameState } from "@/types/game";
+import { calculateLevel, calculateProgress, calculateXpForNextLevel, getXpReward } from "@/utils/level-utils";
+
+interface CustomTask {
+  type: "ПРАВДА" | "ДЕЙСТВИЕ";
+  text: string;
+}
+
+interface ShopItem {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  price: number;
+  action: (gameState: GameState) => GameState;
+}
 
 const INITIAL_PLAYER_STATS: PlayerStats = {
   points: 0,
@@ -15,6 +29,16 @@ const INITIAL_PLAYER_STATS: PlayerStats = {
   achievements: [],
   currentStreak: 0,
   maxStreak: 0,
+  level: 1,
+  xp: 0
+};
+
+const INITIAL_GAME_STATE: GameState = {
+  difficulty: 'medium',
+  playerStats: INITIAL_PLAYER_STATS,
+  lastTaskTimestamp: null,
+  selectedCategory: gameData.categories[0].id,
+  activeChallenge: null
 };
 
 const DIFFICULTY_POINTS = {
@@ -22,6 +46,230 @@ const DIFFICULTY_POINTS = {
   medium: 25,
   hard: 50,
 };
+
+interface CustomTaskFormProps {
+  onClose: () => void;
+  customTask: CustomTask;
+  setCustomTask: (task: CustomTask | ((prev: CustomTask) => CustomTask)) => void;
+}
+
+const CustomTaskForm = ({ onClose, customTask, setCustomTask }: CustomTaskFormProps) => {
+  const { toast } = useToast();
+
+  const handleShare = async () => {
+    const taskText = `${customTask.type}: ${customTask.text}`;
+    
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Правда или Действие - Новое задание',
+          text: taskText,
+        });
+        toast({
+          title: "Успешно!",
+          description: "Задание отправлено",
+        });
+      } catch (error) {
+        console.error('Ошибка при отправке:', error);
+      }
+    } else {
+      navigator.clipboard.writeText(taskText);
+      toast({
+        title: "Скопировано!",
+        description: "Задание скопировано в буфер обмена",
+      });
+    }
+  };
+
+  const shareToTelegram = () => {
+    const encodedResult = encodeURIComponent(customTask.type);
+    const encodedTask = encodeURIComponent(customTask.text);
+    const shareUrl = `${window.location.href.split('?')[0]}?result=${encodedResult}&task=${encodedTask}`;
+    
+    const shareText = encodeURIComponent(`Правда или Действие: Я создал новое задание "${customTask.type}" - ${customTask.text}. Нажми на ссылку, чтобы ответить на вопрос или выполнить действие вместе со мной!`);
+    const telegramUrl = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${shareText}`;
+    
+    window.open(telegramUrl, '_blank');
+    
+    toast({
+      title: "Telegram",
+      description: "Открываем Telegram для отправки",
+    });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
+        className="bg-card/90 backdrop-blur-lg rounded-2xl p-6 w-full max-w-md border border-white/20 relative overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="absolute -right-12 -top-12 w-40 h-40 rounded-full bg-accent/10 blur-2xl"></div>
+        <div className="absolute -left-12 -bottom-12 w-40 h-40 rounded-full bg-primary/10 blur-2xl"></div>
+        
+        <div className="flex justify-between items-center mb-6 relative z-10">
+          <h2 className="text-2xl font-bold text-foreground">Создать задание</h2>
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={onClose}
+            className="p-2 hover:bg-foreground/10 rounded-full"
+          >
+            <X className="w-5 h-5" />
+          </motion.button>
+        </div>
+        
+        <div className="space-y-6 relative z-10">
+          <div>
+            <label className="block text-sm text-foreground/60 mb-3">Тип задания</label>
+            <div className="grid grid-cols-2 gap-3">
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => setCustomTask(prev => ({ ...prev, type: "ПРАВДА" }))}
+                className={`py-3 px-4 rounded-xl font-medium transition-all ${
+                  customTask.type === "ПРАВДА"
+                    ? "bg-blue-500 text-white shadow-lg"
+                    : "bg-foreground/10 hover:bg-foreground/20"
+                }`}
+              >
+                Правда
+              </motion.button>
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => setCustomTask(prev => ({ ...prev, type: "ДЕЙСТВИЕ" }))}
+                className={`py-3 px-4 rounded-xl font-medium transition-all ${
+                  customTask.type === "ДЕЙСТВИЕ"
+                    ? "bg-red-500 text-white shadow-lg"
+                    : "bg-foreground/10 hover:bg-foreground/20"
+                }`}
+              >
+                Действие
+              </motion.button>
+            </div>
+          </div>
+          
+          <div>
+            <label className="block text-sm text-foreground/60 mb-3">Текст задания</label>
+            <textarea
+              value={customTask.text}
+              onChange={(e) => setCustomTask(prev => ({ ...prev, text: e.target.value }))}
+              className="w-full p-4 rounded-xl bg-foreground/10 border border-foreground/10 focus:border-foreground/20 focus:outline-none focus:ring-0 placeholder:text-foreground/40 resize-none transition-all"
+              rows={4}
+              placeholder={customTask.type === "ПРАВДА" ? "Например: Расскажи о своем самом неловком моменте..." : "Например: Изобрази животное, а остальные пусть угадывают..."}
+            />
+          </div>
+          
+          <div className="flex gap-3">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={handleShare}
+              disabled={!customTask.text.trim()}
+              className="flex-1 py-3 px-4 bg-foreground text-primary rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:opacity-90 transition-all"
+            >
+              <Share className="w-5 h-5 inline-block mr-2" />
+              Поделиться
+            </motion.button>
+            
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={shareToTelegram}
+              disabled={!customTask.text.trim()}
+              className="flex-1 py-3 px-4 bg-blue-500 text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:opacity-90 transition-all"
+            >
+              <Send className="w-5 h-5 inline-block mr-2" />
+              Telegram
+            </motion.button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+const SHOP_ITEMS: ShopItem[] = [
+  {
+    id: 'theme',
+    name: 'Новая тема',
+    description: 'Измените внешний вид игры',
+    icon: '🎨',
+    price: 500,
+    action: (state) => ({
+      ...state,
+      playerStats: {
+        ...state.playerStats,
+        points: state.playerStats.points - 500
+      }
+    })
+  },
+  {
+    id: 'xp_boost',
+    name: 'Буст опыта',
+    description: 'x2 опыт на 1 час',
+    icon: '⚡️',
+    price: 300,
+    action: (state) => ({
+      ...state,
+      playerStats: {
+        ...state.playerStats,
+        points: state.playerStats.points - 300,
+        xpBoostEndTime: Date.now() + 3600000
+      }
+    })
+  },
+  {
+    id: 'skip',
+    name: 'Пропуск',
+    description: 'Пропустить задание без штрафа',
+    icon: '🎲',
+    price: 200,
+    action: (state) => ({
+      ...state,
+      playerStats: {
+        ...state.playerStats,
+        points: state.playerStats.points - 200,
+        skipTokens: (state.playerStats.skipTokens || 0) + 1
+      }
+    })
+  },
+  {
+    id: 'surprise',
+    name: 'Сюрприз',
+    description: 'Случайный бонус',
+    icon: '🎁',
+    price: 100,
+    action: (state) => {
+      const surprises = [
+        { xp: 100, message: '+100 XP' },
+        { points: 200, message: '+200 очков' },
+        { skipTokens: 1, message: '+1 пропуск' },
+        { xpBoost: 1800000, message: '30 минут x2 опыта' }
+      ];
+      const surprise = surprises[Math.floor(Math.random() * surprises.length)];
+      return {
+        ...state,
+        playerStats: {
+          ...state.playerStats,
+          points: state.playerStats.points - 100 + (surprise.points || 0),
+          xp: state.playerStats.xp + (surprise.xp || 0),
+          skipTokens: (state.playerStats.skipTokens || 0) + (surprise.skipTokens || 0),
+          xpBoostEndTime: surprise.xpBoost ? Date.now() + surprise.xpBoost : state.playerStats.xpBoostEndTime
+        },
+        surpriseMessage: surprise.message
+      };
+    }
+  }
+];
 
 const Index = () => {
   const [result, setResult] = useState<"ПРАВДА" | "ДЕЙСТВИЕ" | null>(null);
@@ -31,17 +279,20 @@ const Index = () => {
   const [theme, setTheme] = useState<"default" | "dark" | "party">("default");
   const [history, setHistory] = useState<Array<{result: string, task: string}>>([]);
   const [sharedContent, setSharedContent] = useState<{result: string, task: string} | null>(null);
-  const [gameState, setGameState] = useState<GameState>({
-    difficulty: 'medium',
-    playerStats: INITIAL_PLAYER_STATS,
-    lastTaskTimestamp: null,
-  });
+  const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [showAchievements, setShowAchievements] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [completedTasks, setCompletedTasks] = useState<Set<string>>(new Set());
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showCustomTaskForm, setShowCustomTaskForm] = useState(false);
+  const [showShop, setShowShop] = useState(false);
+  const [customTask, setCustomTask] = useState<CustomTask>({
+    type: "ПРАВДА",
+    text: ""
+  });
   const { toast } = useToast();
+  const [xpGainedNotification, setXpGainedNotification] = useState<number | null>(null);
+  const [shopError, setShopError] = useState<string | null>(null);
   
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -70,11 +321,16 @@ const Index = () => {
   }, []);
 
   useEffect(() => {
+    const now = new Date();
     const savedState = localStorage.getItem('truthOrDareGameState');
     if (savedState) {
       try {
         const parsed = JSON.parse(savedState);
-        setGameState(parsed);
+        setGameState({ 
+          ...INITIAL_GAME_STATE,
+          ...parsed,
+          selectedCategory: parsed.selectedCategory || gameData.categories[0].id 
+        });
       } catch (e) {
         console.error("Error parsing game state", e);
       }
@@ -143,66 +399,33 @@ const Index = () => {
     setSharedContent(null);
   };
 
-  const checkAchievements = (stats: PlayerStats) => {
-    const newAchievements = achievements.filter(achievement => {
-      if (stats.achievements.includes(achievement.id)) return false;
-      
-      switch (achievement.condition.type) {
-        case 'tasksCompleted':
-          return stats.tasksCompleted >= achievement.condition.value;
-        case 'pointsEarned':
-          return stats.points >= achievement.condition.value;
-        case 'streakReached':
-          return stats.maxStreak >= achievement.condition.value;
-        case 'truthsAnswered':
-          return stats.truthsAnswered >= achievement.condition.value;
-        case 'daresCompleted':
-          return stats.daresCompleted >= achievement.condition.value;
-        default:
-          return false;
-      }
-    });
-
-    if (newAchievements.length > 0) {
-      const updatedStats = {
-        ...stats,
-        achievements: [...stats.achievements, ...newAchievements.map(a => a.id)]
-      };
-      
-      newAchievements.forEach(achievement => {
-        toast({
-          title: "Новое достижение!",
-          description: `${achievement.title} - ${achievement.description}`,
-        });
-        triggerConfetti();
-      });
-
-      return updatedStats;
-    }
-
-    return stats;
-  };
-
   const updatePlayerStats = (isCompleted: boolean, taskType: "ПРАВДА" | "ДЕЙСТВИЕ") => {
     setGameState(prev => {
       const newStreak = isCompleted ? prev.playerStats.currentStreak + 1 : 0;
       const points = isCompleted ? DIFFICULTY_POINTS[prev.difficulty] : 0;
+      const xpGained = isCompleted ? getXpReward(prev.difficulty) : 0;
+      const currentXp = prev.playerStats.xp || 0;
+      const newXp = currentXp + xpGained;
       
+      if (isCompleted && xpGained > 0) {
+        setXpGainedNotification(xpGained);
+      }
+
       const newStats: PlayerStats = {
         ...prev.playerStats,
-        points: prev.playerStats.points + points,
-        tasksCompleted: isCompleted ? prev.playerStats.tasksCompleted + 1 : prev.playerStats.tasksCompleted,
-        truthsAnswered: isCompleted && taskType === "ПРАВДА" ? prev.playerStats.truthsAnswered + 1 : prev.playerStats.truthsAnswered,
-        daresCompleted: isCompleted && taskType === "ДЕЙСТВИЕ" ? prev.playerStats.daresCompleted + 1 : prev.playerStats.daresCompleted,
+        points: (prev.playerStats.points || 0) + points,
+        xp: newXp,
+        tasksCompleted: isCompleted ? (prev.playerStats.tasksCompleted || 0) + 1 : prev.playerStats.tasksCompleted || 0,
+        truthsAnswered: isCompleted && taskType === "ПРАВДА" ? (prev.playerStats.truthsAnswered || 0) + 1 : prev.playerStats.truthsAnswered || 0,
+        daresCompleted: isCompleted && taskType === "ДЕЙСТВИЕ" ? (prev.playerStats.daresCompleted || 0) + 1 : prev.playerStats.daresCompleted || 0,
         currentStreak: newStreak,
-        maxStreak: Math.max(newStreak, prev.playerStats.maxStreak),
+        maxStreak: Math.max(newStreak, prev.playerStats.maxStreak || 0),
+        level: calculateLevel(newXp)
       };
-
-      const statsWithAchievements = checkAchievements(newStats);
-
+      
       return {
         ...prev,
-        playerStats: statsWithAchievements,
+        playerStats: newStats,
         lastTaskTimestamp: Date.now(),
       };
     });
@@ -224,7 +447,19 @@ const Index = () => {
     const timeoutId = setTimeout(() => {
       const random = Math.random();
       const newResult = random < 0.8 ? "ПРАВДА" : "ДЕЙСТВИЕ";
-      const tasksPool = newResult === "ПРАВДА" ? gameData.truths : gameData.actions;
+      
+      const selectedCategoryData = gameData.categories.find(cat => cat.id === gameState.selectedCategory);
+      const tasksPool = selectedCategoryData ? (newResult === "ПРАВДА" ? selectedCategoryData.truths : selectedCategoryData.actions) : [];
+
+      if (tasksPool.length === 0) {
+        toast({
+          title: "Нет заданий",
+          description: `В категории "${selectedCategoryData?.name || 'выбранной категории'}" нет заданий для "${newResult}"`, 
+        });
+        setIsAnimating(false);
+        return;
+      }
+
       const randomTask = tasksPool[Math.floor(Math.random() * tasksPool.length)];
       const newTaskId = generateTaskId(newResult, randomTask);
       
@@ -259,7 +494,18 @@ const Index = () => {
     setCurrentTaskId(null);
     
     const timeoutId = setTimeout(() => {
-      const tasksPool = choice === "ПРАВДА" ? gameData.truths : gameData.actions;
+      const selectedCategoryData = gameData.categories.find(cat => cat.id === gameState.selectedCategory);
+      const tasksPool = selectedCategoryData ? (choice === "ПРАВДА" ? selectedCategoryData.truths : selectedCategoryData.actions) : [];
+
+       if (tasksPool.length === 0) {
+        toast({
+          title: "Нет заданий",
+          description: `В категории "${selectedCategoryData?.name || 'выбранной категории'}" нет заданий для "${choice}"`, 
+        });
+        setIsAnimating(false);
+        return;
+      }
+
       const randomTask = tasksPool[Math.floor(Math.random() * tasksPool.length)];
       const newTaskId = generateTaskId(choice, randomTask);
       
@@ -295,17 +541,45 @@ const Index = () => {
       return;
     }
     
-    setCompletedTasks(prev => new Set([...prev, currentTaskId]));
+    const newCompletedTasks = new Set(completedTasks);
+    newCompletedTasks.add(currentTaskId);
+    setCompletedTasks(newCompletedTasks);
     
-    updatePlayerStats(completed, result);
+    if (!completed && gameState.playerStats.skipTokens && gameState.playerStats.skipTokens > 0) {
+      setGameState(prev => ({
+        ...prev,
+        playerStats: {
+          ...prev.playerStats,
+          skipTokens: (prev.playerStats.skipTokens || 1) - 1,
+          points: prev.playerStats.points + DIFFICULTY_POINTS[prev.difficulty],
+          tasksCompleted: prev.playerStats.tasksCompleted + 1,
+          xp: prev.playerStats.xp + getXpReward(prev.difficulty),
+        }
+      }));
+      
+      toast({
+        title: "Использован пропуск",
+        description: `Осталось пропусков: ${(gameState.playerStats.skipTokens || 1) - 1}`,
+      });
+    } else {
+      updatePlayerStats(completed, result);
+    }
+    
     setTimeLeft(null);
     
     toast({
       title: completed ? "Задание выполнено!" : "Задание пропущено",
       description: completed 
         ? `+${DIFFICULTY_POINTS[gameState.difficulty]} очков` 
-        : "Серия прервана",
+        : gameState.playerStats.skipTokens && gameState.playerStats.skipTokens > 0 
+          ? "Использован пропуск без штрафа"
+          : "Серия прервана",
     });
+
+    setTimeout(() => {
+      setResult(null);
+      setTask(null);
+    }, 500);
   };
 
   const shareResult = () => {
@@ -317,9 +591,12 @@ const Index = () => {
       navigator.share({
         title: 'Правда или Действие',
         text: shareText,
+      }).then(() => {
+        completeTask(true);
       }).catch(console.error);
     } else {
       navigator.clipboard.writeText(shareText).then(() => {
+        completeTask(true);
         toast({
           title: "Скопировано",
           description: "Текст скопирован в буфер обмена",
@@ -339,6 +616,7 @@ const Index = () => {
     const telegramUrl = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${shareText}`;
     
     window.open(telegramUrl, '_blank');
+    completeTask(true);
     
     toast({
       title: "Telegram",
@@ -364,11 +642,7 @@ const Index = () => {
   };
 
   const resetProgress = () => {
-    setGameState({
-      difficulty: 'medium',
-      playerStats: INITIAL_PLAYER_STATS,
-      lastTaskTimestamp: null,
-    });
+    setGameState(INITIAL_GAME_STATE);
     setCompletedTasks(new Set());
     setHistory([]);
     
@@ -382,6 +656,30 @@ const Index = () => {
     
     setShowResetConfirm(false);
     setShowSettings(false);
+  };
+
+  const purchaseItem = (item: ShopItem) => {
+    if (gameState.playerStats.points < item.price) {
+      setShopError('Недостаточно очков для покупки!');
+      return;
+    }
+
+    setGameState(prev => {
+      const newState = item.action(prev);
+      
+      toast({
+        title: "Покупка успешна!",
+        description: item.name + (newState.surpriseMessage ? ` (${newState.surpriseMessage})` : ''),
+      });
+
+      if (newState.surpriseMessage) {
+        delete newState.surpriseMessage;
+      }
+
+      return newState;
+    });
+
+    setShopError(null);
   };
 
   return (
@@ -434,86 +732,145 @@ const Index = () => {
           </motion.div>
         )}
         
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center mb-8 relative"
-        >
-          <h1 className="text-4xl font-bold mb-2 text-foreground tracking-tight">
-            Правда или Действие
-          </h1>
-          <p className="text-foreground/60">
-            Веселая игра для компании друзей
-          </p>
-          <div className="absolute right-0 top-0">
-            <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              onClick={() => setShowSettings(!showSettings)}
-              className="bg-foreground/20 p-2 rounded-full backdrop-blur-lg"
+        <div className="flex justify-between items-center mb-8">
+          <h1 className="text-3xl font-bold">Правда или Действие</h1>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowCustomTaskForm(true)}
+              className="p-2 rounded-full bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+              title="Создать своё задание"
             >
-              <Settings size={20} />
-            </motion.button>
+              <Plus className="w-5 h-5" />
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="p-2 rounded-full bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 transition-colors"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
           </div>
-        </motion.div>
+        </div>
         <AnimatePresence>
           {showSettings && (
             <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="bg-card/90 backdrop-blur-lg rounded-2xl p-6 mb-6 shadow-lg border border-white/20 overflow-hidden"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+              onClick={() => setShowSettings(false)}
             >
-              <h3 className="font-semibold mb-4">Настройки</h3>
-              
-              <div className="space-y-6">
-                <div>
-                  <label className="block text-sm mb-2">Тема оформления</label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(["default", "dark", "party"] as const).map((t) => (
-                      <button
-                        key={t}
-                        onClick={() => setTheme(t)}
-                        className={`py-2 px-3 rounded-lg text-sm transition ${
-                          theme === t 
-                            ? "bg-foreground text-primary" 
-                            : "bg-foreground/20 hover:bg-foreground/30"
-                        }`}
-                      >
-                        {t === "default" ? "Стандарт" : t === "dark" ? "Темная" : "Вечеринка"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm mb-2">Сложность</label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(["easy", "medium", "hard"] as Difficulty[]).map((diff) => (
-                      <button
-                        key={diff}
-                        onClick={() => setGameState(prev => ({ ...prev, difficulty: diff }))}
-                        className={`py-2 px-3 rounded-lg text-sm transition ${
-                          gameState.difficulty === diff 
-                            ? "bg-foreground text-primary" 
-                            : "bg-foreground/20 hover:bg-foreground/30"
-                        }`}
-                      >
-                        {diff === "easy" ? "Легко" : diff === "medium" ? "Средне" : "Сложно"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-foreground/10">
-                  <button
-                    onClick={() => setShowResetConfirm(true)}
-                    className="w-full py-3 px-4 rounded-xl bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors"
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                className="bg-card/90 backdrop-blur-lg rounded-2xl p-6 w-full max-w-md border border-white/20 relative overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="absolute -right-12 -top-12 w-40 h-40 rounded-full bg-accent/10 blur-2xl"></div>
+                <div className="absolute -left-12 -bottom-12 w-40 h-40 rounded-full bg-primary/10 blur-2xl"></div>
+                
+                <div className="flex justify-between items-center mb-6 relative z-10">
+                  <h2 className="text-2xl font-bold text-foreground">Настройки</h2>
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => setShowSettings(false)}
+                    className="p-2 hover:bg-foreground/10 rounded-full"
                   >
-                    Сбросить прогресс
-                  </button>
+                    <X className="w-5 h-5" />
+                  </motion.button>
                 </div>
-              </div>
+
+                <div className="space-y-6 relative z-10">
+                  <div className="p-4 rounded-xl bg-foreground/5 border border-foreground/10">
+                    <h3 className="font-semibold mb-3">Статистика</h3>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-foreground/60">Всего очков:</span>
+                        <span className="font-medium">{gameState.playerStats.points}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-foreground/60">Уровень:</span>
+                        <span className="font-medium">{gameState.playerStats.level}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-foreground/60">Опыт:</span>
+                        <span className="font-medium">{gameState.playerStats.xp} / {calculateXpForNextLevel(gameState.playerStats.level)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-foreground/60">Заданий выполнено:</span>
+                        <span className="font-medium">{gameState.playerStats.tasksCompleted}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-foreground/60">Правда:</span>
+                        <span className="font-medium">{gameState.playerStats.truthsAnswered}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-foreground/60">Действие:</span>
+                        <span className="font-medium">{gameState.playerStats.daresCompleted}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-foreground/60">Лучшая серия:</span>
+                        <span className="font-medium">{gameState.playerStats.maxStreak}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-2">Тема оформления</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["default", "dark", "party"] as const).map((t) => (
+                        <button
+                          key={t}
+                          onClick={() => setTheme(t)}
+                          className={`py-2 px-3 rounded-lg text-sm transition ${theme === t ? "bg-foreground text-primary" : "bg-foreground/20 hover:bg-foreground/30"}`}
+                        >
+                          {t === "default" ? "Стандарт" : t === "dark" ? "Темная" : "Вечеринка"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-2">Категория заданий</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {gameData.categories.map((category) => (
+                        <button
+                          key={category.id}
+                          onClick={() => setGameState(prev => ({ ...prev, selectedCategory: category.id }))}
+                          className={`py-2 px-3 rounded-lg text-sm transition ${gameState.selectedCategory === category.id ? "bg-foreground text-primary" : "bg-foreground/20 hover:bg-foreground/30"}`}
+                        >
+                          {category.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-2">Сложность</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["easy", "medium", "hard"] as Difficulty[]).map((diff) => (
+                        <button
+                          key={diff}
+                          onClick={() => setGameState(prev => ({ ...prev, difficulty: diff }))}
+                          className={`py-2 px-3 rounded-lg text-sm transition ${gameState.difficulty === diff ? "bg-foreground text-primary" : "bg-foreground/20 hover:bg-foreground/30"}`}
+                        >
+                          {diff === "easy" ? "Легко" : diff === "medium" ? "Средне" : "Сложно"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="pt-4 border-t border-foreground/10">
+                    <button
+                      onClick={() => setShowResetConfirm(true)}
+                      className="w-full py-3 px-4 rounded-xl bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors"
+                    >
+                      Сбросить прогресс
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -711,95 +1068,73 @@ const Index = () => {
             <span className="font-semibold">{gameState.playerStats.points}</span>
           </div>
           <div className="flex items-center gap-2">
+            <div className="relative">
+              <span className="font-semibold">Ур. {gameState.playerStats.level}</span>
+              <div className="w-20 h-1 bg-foreground/20 rounded-full mt-1">
+                <div 
+                  className="h-full bg-primary rounded-full"
+                  style={{ 
+                    width: `${calculateProgress(
+                      gameState.playerStats.xp,
+                      gameState.playerStats.level
+                    )}%` 
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
             <Flame className="w-5 h-5" />
             <span className="font-semibold">{gameState.playerStats.currentStreak}</span>
           </div>
-          <button
-            onClick={() => setShowAchievements(true)}
-            className="flex items-center gap-2 hover:opacity-80"
-          >
-            <Trophy className="w-5 h-5" />
-            <span className="font-semibold">{gameState.playerStats.achievements.length}</span>
-          </button>
         </motion.div>
-        <AnimatePresence>
-          {showAchievements && (
+        <div className="grid grid-cols-1 gap-4 mb-8">
+          {timeLeft !== null && (
             <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center"
-              onClick={() => setShowAchievements(false)}
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="fixed top-4 right-4 bg-card/90 backdrop-blur-lg rounded-full p-3 flex items-center gap-2"
             >
-              <motion.div
-                initial={{ scale: 0.9, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.9, opacity: 0 }}
-                className="bg-card/90 backdrop-blur-lg rounded-xl p-6 m-4 max-w-md w-full max-h-[80vh] overflow-y-auto"
-                onClick={e => e.stopPropagation()}
-              >
-                <h2 className="text-2xl font-bold mb-4">Достижения</h2>
-                <div className="space-y-4">
-                  {achievements.map(achievement => {
-                    const isUnlocked = gameState.playerStats.achievements.includes(achievement.id);
-                    return (
-                      <div
-                        key={achievement.id}
-                        className={`p-4 rounded-lg ${
-                          isUnlocked ? 'bg-primary/20' : 'bg-foreground/10'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className={`${isUnlocked ? 'text-primary' : 'text-foreground/40'}`}>
-                            {achievement.icon}
-                          </div>
-                          <div>
-                            <h3 className="font-semibold">{achievement.title}</h3>
-                            <p className="text-sm text-foreground/60">{achievement.description}</p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </motion.div>
+              <Timer className="w-5 h-5" />
+              <span className="font-semibold">{timeLeft}s</span>
             </motion.div>
           )}
-        </AnimatePresence>
-        {timeLeft !== null && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="fixed top-4 right-4 bg-card/90 backdrop-blur-lg rounded-full p-3 flex items-center gap-2"
-          >
-            <Timer className="w-5 h-5" />
-            <span className="font-semibold">{timeLeft}s</span>
-          </motion.div>
-        )}
-        {result && currentTaskId && !completedTasks.has(currentTaskId) && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-4 grid grid-cols-2 gap-4"
-          >
-            <motion.button
-              onClick={() => completeTask(true)}
-              className="bg-green-500 text-white rounded-xl py-3 px-6 font-semibold shadow-lg hover:bg-green-600"
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
+
+          {result && currentTaskId && !completedTasks.has(currentTaskId) && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 grid grid-cols-2 gap-4"
             >
-              Выполнено
-            </motion.button>
-            <motion.button
-              onClick={() => completeTask(false)}
-              className="bg-red-500 text-white rounded-xl py-3 px-6 font-semibold shadow-lg hover:bg-red-600"
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Пропустить
-            </motion.button>
-          </motion.div>
-        )}
+              <motion.button
+                onClick={() => completeTask(true)}
+                className="bg-green-500 text-white rounded-xl py-3 px-6 font-semibold shadow-lg hover:bg-green-600"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                Выполнено
+              </motion.button>
+              <motion.button
+                onClick={() => completeTask(false)}
+                className="bg-red-500 text-white rounded-xl py-3 px-6 font-semibold shadow-lg hover:bg-red-600"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                Пропустить
+              </motion.button>
+            </motion.div>
+          )}
+
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowShop(true)}
+            className="flex flex-col items-center p-3 rounded-xl bg-card/90 backdrop-blur-lg border border-white/20"
+          >
+            <Gift className="w-6 h-6 mb-1" />
+            <span className="text-xs">Магазин</span>
+          </motion.button>
+        </div>
         <AnimatePresence>
           {showResetConfirm && (
             <motion.div
@@ -841,6 +1176,65 @@ const Index = () => {
             </motion.div>
           )}
         </AnimatePresence>
+        <AnimatePresence>
+          {showCustomTaskForm && (
+            <CustomTaskForm 
+              onClose={() => setShowCustomTaskForm(false)}
+              customTask={customTask}
+              setCustomTask={setCustomTask}
+            />
+          )}
+        </AnimatePresence>
+        {showShop && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setShowShop(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-card/90 backdrop-blur-lg rounded-xl p-6 w-full max-w-md"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold">Магазин</h2>
+                <div className="flex items-center gap-2">
+                  <Star className="w-5 h-5" />
+                  <span className="font-semibold">{gameState.playerStats.points}</span>
+                </div>
+              </div>
+              {shopError && (
+                <div className="mb-4 p-3 rounded-lg bg-red-500/10 text-red-500 text-sm">
+                  {shopError}
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-4">
+                {SHOP_ITEMS.map(item => (
+                  <div key={item.id} className="p-4 rounded-lg bg-foreground/10">
+                    <div className="text-2xl mb-2">{item.icon}</div>
+                    <h3 className="font-semibold">{item.name}</h3>
+                    <p className="text-sm text-foreground/60 mb-2">{item.description}</p>
+                    <button
+                      onClick={() => purchaseItem(item)}
+                      className={`w-full py-2 px-3 rounded-lg text-sm transition-colors ${
+                        gameState.playerStats.points >= item.price
+                          ? "bg-primary text-white hover:bg-primary/90"
+                          : "bg-foreground/20 text-foreground/40 cursor-not-allowed"
+                      }`}
+                      disabled={gameState.playerStats.points < item.price}
+                    >
+                      {item.price} очков
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </div>
     </div>
   );
