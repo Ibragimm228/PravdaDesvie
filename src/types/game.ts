@@ -10,6 +10,11 @@ export interface PlayerStats {
   maxStreak: number;
   level: number;
   xp: number;
+  activeQuests: string[];
+  completedQuests: string[];
+  badges: string[];
+  hardTasksCompleted: number;
+  sharedTasks: number;
   skipTokens?: number;
   xpBoostEndTime?: number;
 }
@@ -19,16 +24,36 @@ export interface GameState {
   playerStats: PlayerStats;
   lastTaskTimestamp: number | null;
   selectedCategory: string;
-  activeChallenge: Challenge | null;
   surpriseMessage?: string;
+  availableQuests: Quest[];
+  communityQuests: Quest[];
 }
 
-export interface Challenge {
+export interface QuestReward {
+  points?: number;
+  xp?: number;
+  items?: Array<{ itemId: string; quantity: number }>;
+  badgeId?: string;
+  tempBoost?: { 
+    type: "XP_BOOST" | "POINT_BOOST"; 
+    durationHours: number; 
+    multiplier: number 
+  };
+  claimed?: boolean;
+}
+
+export interface Quest {
   id: string;
-  fromPlayer: string;
-  toPlayer: string;
-  task: string;
-  type: "TRUTH" | "DARE";
-  status: "PENDING" | "ACCEPTED" | "COMPLETED" | "FAILED";
-  expiresAt: number;
+  type: "DAILY_PERSONAL" | "WEEKLY_PERSONAL" | "COMMUNITY_GOAL" | "EVENT_THEMED";
+  title: string;
+  description: string;
+  targetValue: number;
+  currentProgress: number;
+  reward: QuestReward;
+  isActive: boolean;
+  isCompleted: boolean;
+  startDate?: number;
+  endDate?: number;
+  relatedCategory?: string;
+  relatedDifficulty?: Difficulty;
 } 

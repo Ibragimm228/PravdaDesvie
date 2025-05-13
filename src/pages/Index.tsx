@@ -4,8 +4,10 @@ import { useToast } from "@/hooks/use-toast";
 import { gameData } from "@/data/game-data";
 import confetti from 'canvas-confetti';
 import { Share, Settings, ArrowRight, Send, Trophy, Timer, Star, Flame, Plus, X, Gift } from "lucide-react";
-import { Difficulty, PlayerStats, GameState } from "@/types/game";
+import { Difficulty, PlayerStats, GameState, Quest } from "@/types/game";
 import { calculateLevel, calculateProgress, calculateXpForNextLevel, getXpReward } from "@/utils/level-utils";
+import { generateDailyQuests, generateWeeklyQuests, generateCommunityQuest } from "@/data/quest-data";
+import QuestsPanel from "@/components/QuestsPanel";
 
 interface CustomTask {
   type: "ПРАВДА" | "ДЕЙСТВИЕ";
@@ -30,7 +32,14 @@ const INITIAL_PLAYER_STATS: PlayerStats = {
   currentStreak: 0,
   maxStreak: 0,
   level: 1,
-  xp: 0
+  xp: 0,
+  activeQuests: [],
+  completedQuests: [],
+  badges: [],
+  hardTasksCompleted: 0,
+  sharedTasks: 0,
+  skipTokens: 0,
+  xpBoostEndTime: null
 };
 
 const INITIAL_GAME_STATE: GameState = {
@@ -38,7 +47,8 @@ const INITIAL_GAME_STATE: GameState = {
   playerStats: INITIAL_PLAYER_STATS,
   lastTaskTimestamp: null,
   selectedCategory: gameData.categories[0].id,
-  activeChallenge: null
+  availableQuests: [...generateDailyQuests(), ...generateWeeklyQuests()],
+  communityQuests: [generateCommunityQuest()]
 };
 
 const DIFFICULTY_POINTS = {
@@ -293,6 +303,7 @@ const Index = () => {
   const { toast } = useToast();
   const [xpGainedNotification, setXpGainedNotification] = useState<number | null>(null);
   const [shopError, setShopError] = useState<string | null>(null);
+  const [showQuests, setShowQuests] = useState(false);
   
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -375,6 +386,31 @@ const Index = () => {
       JSON.stringify(Array.from(completedTasks)));
   }, [completedTasks]);
 
+  useEffect(() => {
+    const now = Date.now();
+    const dailyQuests = gameState.availableQuests.filter(q => q.type === "DAILY_PERSONAL");
+    const weeklyQuests = gameState.availableQuests.filter(q => q.type === "WEEKLY_PERSONAL");
+    
+    let needsUpdate = false;
+    if (dailyQuests.length === 0 || dailyQuests.some(q => q.endDate && q.endDate < now)) {
+      needsUpdate = true;
+    }
+    if (weeklyQuests.length === 0 || weeklyQuests.some(q => q.endDate && q.endDate < now)) {
+      needsUpdate = true;
+    }
+    
+    if (needsUpdate) {
+      setGameState(prev => ({
+        ...prev,
+        availableQuests: [
+          ...prev.availableQuests.filter(q => q.endDate && q.endDate >= now),
+          ...generateDailyQuests(),
+          ...generateWeeklyQuests()
+        ]
+      }));
+    }
+  }, [gameState.lastTaskTimestamp]);
+
   const triggerConfetti = () => {
     confetti({
       particleCount: 100,
@@ -409,7 +445,56 @@ const Index = () => {
       
       if (isCompleted && xpGained > 0) {
         setXpGainedNotification(xpGained);
-      }
+      } 
+      const updatedQuests = prev.availableQuests.map(quest => {
+        if (quest.isCompleted) return quest;
+
+        let shouldUpdate = false;
+        let newProgress = quest.currentProgress;
+
+        switch (quest.type) {
+          case "DAILY_PERSONAL":
+          case "WEEKLY_PERSONAL":
+            if (taskType === "ПРАВДА" && quest.title === "Мастер Правды") {
+              shouldUpdate = true;
+              newProgress = quest.currentProgress + 1;
+            } else if (taskType === "ДЕЙСТВИЕ" && quest.title === "Смельчак") {
+              shouldUpdate = true;
+              newProgress = quest.currentProgress + 1;
+            } else if (quest.title === "Серийный Игрок") {
+              shouldUpdate = true;
+              newProgress = newStreak;
+            }
+            break;
+          case "COMMUNITY_GOAL":
+            if (isCompleted) {
+              shouldUpdate = true;
+              newProgress = quest.currentProgress + 1;
+            }
+            break;
+        }
+
+        if (!shouldUpdate) return quest;
+
+        const isNowCompleted = newProgress >= quest.targetValue;
+        return {
+          ...quest,
+          currentProgress: newProgress,
+          isCompleted: isNowCompleted
+        };
+      });
+      const updatedCommunityQuests = prev.communityQuests.map(quest => {
+        if (quest.isCompleted || !isCompleted) return quest;
+
+        const newProgress = quest.currentProgress + 1;
+        const isNowCompleted = newProgress >= quest.targetValue;
+        
+        return {
+          ...quest,
+          currentProgress: newProgress,
+          isCompleted: isNowCompleted
+        };
+      });
 
       const newStats: PlayerStats = {
         ...prev.playerStats,
@@ -420,13 +505,16 @@ const Index = () => {
         daresCompleted: isCompleted && taskType === "ДЕЙСТВИЕ" ? (prev.playerStats.daresCompleted || 0) + 1 : prev.playerStats.daresCompleted || 0,
         currentStreak: newStreak,
         maxStreak: Math.max(newStreak, prev.playerStats.maxStreak || 0),
-        level: calculateLevel(newXp)
+        level: calculateLevel(newXp),
+        hardTasksCompleted: isCompleted && prev.difficulty === "hard" ? (prev.playerStats.hardTasksCompleted || 0) + 1 : prev.playerStats.hardTasksCompleted || 0
       };
-      
+
       return {
         ...prev,
         playerStats: newStats,
         lastTaskTimestamp: Date.now(),
+        availableQuests: updatedQuests,
+        communityQuests: updatedCommunityQuests
       };
     });
   };
@@ -593,10 +681,24 @@ const Index = () => {
         text: shareText,
       }).then(() => {
         completeTask(true);
+        setGameState(prev => ({
+          ...prev,
+          playerStats: {
+            ...prev.playerStats,
+            sharedTasks: (prev.playerStats.sharedTasks || 0) + 1
+          }
+        }));
       }).catch(console.error);
     } else {
       navigator.clipboard.writeText(shareText).then(() => {
         completeTask(true);
+        setGameState(prev => ({
+          ...prev,
+          playerStats: {
+            ...prev.playerStats,
+            sharedTasks: (prev.playerStats.sharedTasks || 0) + 1
+          }
+        }));
         toast({
           title: "Скопировано",
           description: "Текст скопирован в буфер обмена",
@@ -617,6 +719,13 @@ const Index = () => {
     
     window.open(telegramUrl, '_blank');
     completeTask(true);
+    setGameState(prev => ({
+      ...prev,
+      playerStats: {
+        ...prev.playerStats,
+        sharedTasks: (prev.playerStats.sharedTasks || 0) + 1
+      }
+    }));
     
     toast({
       title: "Telegram",
@@ -633,6 +742,19 @@ const Index = () => {
     const telegramUrl = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${shareText}`;
     
     window.open(telegramUrl, '_blank');
+    
+    setGameState(prev => ({
+      ...prev,
+      playerStats: {
+        ...prev.playerStats,
+        sharedTasks: (prev.playerStats.sharedTasks || 0) + 1
+      }
+    }));
+    
+    toast({
+      title: "Telegram",
+      description: "Открываем Telegram для отправки",
+    });
   };
 
   const cardVariants = {
@@ -680,6 +802,48 @@ const Index = () => {
     });
 
     setShopError(null);
+  };
+
+  const handleClaimQuestReward = (quest: Quest) => {
+    if (!quest.isCompleted || quest.reward.claimed) return;
+
+    setGameState(prev => {
+      const newState = { ...prev };
+      if (quest.reward.points) {
+        newState.playerStats.points += quest.reward.points;
+      }
+      if (quest.reward.xp) {
+        newState.playerStats.xp += quest.reward.xp;
+      }
+      if (quest.reward.badgeId && !newState.playerStats.badges.includes(quest.reward.badgeId)) {
+        newState.playerStats.badges.push(quest.reward.badgeId);
+      }
+      if (quest.reward.items) {
+        quest.reward.items.forEach(item => {
+          if (item.itemId === "skip") {
+            newState.playerStats.skipTokens = (newState.playerStats.skipTokens || 0) + item.quantity;
+          }
+        });
+      }
+      if (quest.reward.tempBoost) {
+        if (quest.reward.tempBoost.type === "XP_BOOST") {
+          newState.playerStats.xpBoostEndTime = Date.now() + quest.reward.tempBoost.durationHours * 60 * 60 * 1000;
+        }
+      }
+      const questIndex = newState.availableQuests.findIndex(q => q.id === quest.id);
+      if (questIndex !== -1) {
+        newState.availableQuests[questIndex].reward.claimed = true;
+      }
+      newState.playerStats.completedQuests.push(quest.id);
+      newState.playerStats.activeQuests = newState.playerStats.activeQuests.filter(id => id !== quest.id);
+
+      toast({
+        title: "Награда получена!",
+        description: `Вы получили награду за квест "${quest.title}"`,
+      });
+
+      return newState;
+    });
   };
 
   return (
@@ -1125,15 +1289,27 @@ const Index = () => {
             </motion.div>
           )}
 
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setShowShop(true)}
-            className="flex flex-col items-center p-3 rounded-xl bg-card/90 backdrop-blur-lg border border-white/20"
-          >
-            <Gift className="w-6 h-6 mb-1" />
-            <span className="text-xs">Магазин</span>
-          </motion.button>
+          <div className="flex gap-4">
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setShowShop(true)}
+              className="flex-1 flex flex-col items-center p-3 rounded-xl bg-card/90 backdrop-blur-lg border border-white/20"
+            >
+              <Gift className="w-6 h-6 mb-1" />
+              <span className="text-xs">Магазин</span>
+            </motion.button>
+
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setShowQuests(true)}
+              className="flex-1 flex flex-col items-center p-3 rounded-xl bg-card/90 backdrop-blur-lg border border-white/20"
+            >
+              <Trophy className="w-6 h-6 mb-1" />
+              <span className="text-xs">Квесты</span>
+            </motion.button>
+          </div>
         </div>
         <AnimatePresence>
           {showResetConfirm && (
@@ -1235,6 +1411,16 @@ const Index = () => {
             </motion.div>
           </motion.div>
         )}
+        <AnimatePresence>
+          {showQuests && (
+            <QuestsPanel
+              quests={gameState.availableQuests}
+              playerStats={gameState.playerStats}
+              onClaimReward={handleClaimQuestReward}
+              onClose={() => setShowQuests(false)}
+            />
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
